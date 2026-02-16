@@ -13,10 +13,14 @@ interface ReelItemProps {
     body: string;
   };
   isActive: boolean;
-  shouldLoad: boolean; // Controls preloading
+  shouldLoad: boolean; 
   onSwipeUp: () => void;
   onSwipeDown: () => void;
 }
+
+// Asset paths pointing to your R2 Proxy
+const R2_VIDEO_URL = "/api/assets/subway_surfers.mp4";
+const R2_FONT_URL = "/api/assets/Roboto-Bold.ttf";
 
 export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwipeDown }: ReelItemProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -29,15 +33,15 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
   
   const ffmpegRef = useRef<FFmpeg | null>(null);
 
-  // --- 1. Calculate Schedule Upfront ---
-  // Calculates exactly when each chunk starts and ends based on word count
+  // --- 1. Calculate Text Schedule ---
+  // Determines when each "chunk" of text appears based on word count
   const schedule = useMemo(() => {
     const chunks = getSmartChunks(email.body.substring(0, 300));
     let currentTime = 0;
     
     return chunks.map(text => {
       const wordCount = text.split(" ").length;
-      // 300ms per word is a good baseline for TTS speed
+      // Approx 300ms per word + small buffer
       const duration = Math.max(1000, (wordCount * 300) + 200);
       const start = currentTime;
       const end = currentTime + duration;
@@ -46,7 +50,7 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
     });
   }, [email.body]);
 
-  // --- 2. Progressive Loading ---
+  // --- 2. Progressive Loading (TTS) ---
   useEffect(() => {
     if (shouldLoad && !audioUrl) {
       const cleanText = email.body.substring(0, 300); 
@@ -67,7 +71,6 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
       return;
     }
 
-    // Play Assets
     videoRef.current?.play().catch(() => {});
 
     if (audioUrl && audioRef.current) {
@@ -76,31 +79,26 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
       audio.src = audioUrl;
       
       const playPromise = audio.play();
-      playPromise.catch(() => console.log("Audio play interrupted"));
+      playPromise.catch(() => console.log("Audio playback interrupted"));
 
-      // --- SYNC ENGINE (RequestAnimationFrame) ---
       let startTime = Date.now();
       let animationFrameId: number;
 
       const tick = () => {
         const elapsed = Date.now() - startTime;
-        
-        // Find the chunk that should be shown right now
         const currentItem = schedule.find(item => elapsed >= item.start && elapsed < item.end);
 
         if (currentItem) {
           setActiveText(prev => prev !== currentItem.text ? currentItem.text : prev);
-        } else if (elapsed > schedule[schedule.length - 1]?.end) {
-          // Finished
+        } else if (elapsed > (schedule[schedule.length - 1]?.end || 0)) {
           setActiveText(""); 
         }
 
-        if (elapsed < schedule[schedule.length - 1]?.end + 1000) {
+        if (elapsed < (schedule[schedule.length - 1]?.end || 0) + 1000) {
           animationFrameId = requestAnimationFrame(tick);
         }
       };
 
-      // Start the loop slightly after play to account for buffering
       const startTimer = setTimeout(() => {
         startTime = Date.now();
         tick();
@@ -115,7 +113,7 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
   }, [isActive, audioUrl, schedule]);
 
 
-  // --- 4. FFmpeg Download Logic ---
+  // --- 4. FFmpeg Export Logic ---
   const handleDownload = async () => {
     if (downloadUrl) return; 
     setIsProcessing(true);
@@ -132,15 +130,22 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
             });
         }
 
-        const videoData = await fetch(new URL('/subway_surfers.mp4', window.location.origin)).then(r => r.arrayBuffer());
-        const fontData = await fetch(new URL('/Roboto-Bold.ttf', window.location.origin)).then(r => r.arrayBuffer());
-        const audioBlob = await fetch(audioUrl).then(r => r.blob());
+        // Fetch assets from R2 Proxy
+        const [videoData, fontData, audioBlob] = await Promise.all([
+          fetch(R2_VIDEO_URL).then(r => r.arrayBuffer()),
+          fetch(R2_FONT_URL).then(r => r.arrayBuffer()),
+          fetch(audioUrl).then(r => r.blob())
+        ]);
 
         await ffmpeg.writeFile('input.mp4', new Uint8Array(videoData));
         await ffmpeg.writeFile('audio.mp3', await fetchFile(audioBlob));
         await ffmpeg.writeFile('font.ttf', new Uint8Array(fontData));
 
-        const cleanText = email.body.substring(0, 150).replace(/'/g, "").replace(/(\r\n|\n|\r)/gm, " ");
+        // Clean text for FFmpeg command line
+        const cleanText = email.body.substring(0, 150)
+            .replace(/'/g, "")
+            .replace(/(\r\n|\n|\r)/gm, " ")
+            .replace(/:/g, "\\:");
         
         await ffmpeg.exec([
             '-stream_loop', '-1', '-i', 'input.mp4',
@@ -156,8 +161,8 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
         const videoBlob = new Blob([data as Uint8Array], { type: 'video/mp4' });
         setDownloadUrl(URL.createObjectURL(videoBlob));
     } catch (e) {
-        console.error(e);
-        alert("Render failed");
+        console.error("FFmpeg Error:", e);
+        alert("Render failed. Check console for details.");
     } finally {
         setIsProcessing(false);
     }
@@ -172,14 +177,15 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
       style={{ opacity }}
       drag="y"
       dragConstraints={{ top: 0, bottom: 0 }}
-      onDragEnd={(e, { offset }) => {
+      onDragEnd={(_, { offset }) => {
         if (offset.y < -100) onSwipeUp();
         if (offset.y > 100) onSwipeDown();
       }}
     >
+        {/* Background Video from R2 */}
         <video 
             ref={videoRef}
-            src="/subway_surfers.mp4"
+            src={R2_VIDEO_URL}
             loop
             muted 
             playsInline
@@ -191,7 +197,7 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
         {/* Content Layer */}
         <div className="absolute inset-0 flex flex-col z-10 pointer-events-none">
             
-            {/* CENTRAL TEXT */}
+            {/* Animated Word Chunks */}
             <div className="flex-1 flex items-center justify-center px-6">
                 <div className="w-full text-center">
                   <AnimatePresence mode="wait">
@@ -201,13 +207,12 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
                             initial={{ opacity: 0, scale: 0.9, y: 10 }}
                             animate={{ opacity: 1, scale: 1, y: 0 }}
                             exit={{ opacity: 0, scale: 1.1, position: 'absolute', left: 0, right: 0 }}
-                            transition={{ duration: 0.15 }} // Fast snappy transitions
+                            transition={{ duration: 0.1 }}
                         >
                             <span 
                               className="inline-block text-3xl md:text-4xl font-black text-white leading-tight drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)] px-4 py-2 bg-black/40 backdrop-blur-sm rounded-2xl"
                               style={{ 
                                 textShadow: '-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000',
-                                fontFamily: 'sans-serif'
                               }}
                             >
                                 {activeText}
@@ -218,7 +223,7 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
                 </div>
             </div>
 
-            {/* BOTTOM INFO (Pointer events allowed) */}
+            {/* UI Overlay */}
             <div className="p-4 pb-16 flex items-end justify-between pointer-events-auto">
                 <div className="flex-1 mr-8">
                     <div className="flex items-center gap-2 mb-3">
@@ -233,11 +238,12 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
                     
                     <div className="bg-black/30 backdrop-blur-sm p-3 rounded-xl border border-white/5">
                         <h2 className="text-white text-xs opacity-90 line-clamp-2 leading-relaxed">
-                           {email.body.substring(0, 60)}...
+                           {email.body.substring(0, 80)}...
                         </h2>
                     </div>
                 </div>
 
+                {/* Action Buttons */}
                 <div className="flex flex-col gap-6 items-center pb-2">
                     <button className="flex flex-col items-center gap-1 group">
                          <div className="p-3 bg-black/40 rounded-full backdrop-blur-md group-active:scale-90 transition-transform border border-white/10">
@@ -253,7 +259,7 @@ export default function ReelItem({ email, isActive, shouldLoad, onSwipeUp, onSwi
                                 download={`brainrot-${email.id}.mp4`}
                                 className="flex flex-col items-center gap-1 group"
                             >
-                                <div className="p-3 bg-green-500 rounded-full shadow-[0_0_20px_rgba(34,197,94,0.6)] animate-[bounce_1s_infinite]">
+                                <div className="p-3 bg-green-500 rounded-full shadow-[0_0_20px_rgba(34,197,94,0.6)] animate-bounce">
                                     <Download className="w-7 h-7 text-black fill-current" />
                                 </div>
                                 <span className="text-[10px] font-bold text-green-400">Save</span>
