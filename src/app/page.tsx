@@ -1,76 +1,98 @@
 "use client";
-import { useState, useRef } from 'react';
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { useState, useEffect } from 'react';
+import { useSession } from "next-auth/react";
+import { motion } from "framer-motion";
+import { Loader2, Play } from "lucide-react";
+import LoginPage from "./components/LoginPage";
+import ReelItem from "./components/ReelItem";
 
-export default function ReelMaker() {
-  const [loading, setLoading] = useState(false);
-  const [videoUrl, setVideoUrl] = useState("");
-  const ffmpegRef = useRef(new FFmpeg());
+export default function ReelFeed() {
+  const { data: session, status } = useSession();
+  const [emails, setEmails] = useState<any[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [hasInteracted, setHasInteracted] = useState(false);
 
-  const loadFFmpeg = async () => {
-    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-    const ffmpeg = ffmpegRef.current;
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-    });
+  useEffect(() => {
+    if (session) {
+      fetch('/api/emails')
+        .then(res => res.json())
+        .then(data => {
+          if (data.messages) setEmails(data.messages);
+          setLoading(false);
+        })
+        .catch(err => {
+            console.error(err);
+            setLoading(false);
+        });
+    }
+  }, [session]);
+
+  const handleNext = () => {
+    if (currentIndex < emails.length - 1) setCurrentIndex(prev => prev + 1);
   };
 
-  const generateReel = async () => {
-    setLoading(true);
-    await loadFFmpeg();
-    const ffmpeg = ffmpegRef.current;
-
-    // 1. Fetch Email
-    const emailRes = await fetch('/api/emails');
-    const { body } = await emailRes.json();
-
-    // 2. Generate Speech (Completely Free Browser Tool)
-    // Note: In a real app, you'd record the 'speechSynthesis' output to a blob.
-    // For this example, we assume you have an 'audio.mp3' or use a free TTS API like Puter.js
-    const audioBlob = await fetchTTS(body); 
-
-    // 3. Process with FFmpeg
-    await ffmpeg.writeFile('input.mp4', await fetchFile('/subway_surfers.mp4'));
-    await ffmpeg.writeFile('audio.mp3', await fetchFile(audioBlob));
-
-    // Command: Mix audio with video and trim video to audio length
-    await ffmpeg.exec([
-      '-i', 'input.mp4', 
-      '-i', 'audio.mp3', 
-      '-map', '0:v', '-map', '1:a', 
-      '-c:v', 'copy', '-shortest', 
-      'output.mp4'
-    ]);
-
-    const data = await ffmpeg.readFile('output.mp4');
-    setVideoUrl(URL.createObjectURL(new Blob([data], { type: 'video/mp4' })));
-    setLoading(false);
+  const handlePrev = () => {
+    if (currentIndex > 0) setCurrentIndex(prev => prev - 1);
   };
 
-  return (
-    <div className="flex flex-col items-center p-10 gap-5">
-      <h1 className="text-2xl font-bold">Email to Reel Converter</h1>
-      <button 
-        onClick={generateReel} 
-        disabled={loading}
-        className="bg-blue-600 text-white px-6 py-2 rounded-lg disabled:bg-gray-400"
-      >
-        {loading ? "Generating (This stays in your browser)..." : "Convert Latest Email"}
-      </button>
-
-      {videoUrl && (
-        <video src={videoUrl} controls className="w-[360px] h-[640px] rounded-xl shadow-2xl" />
-      )}
+  if (status === "loading") return null;
+  if (!session) return <LoginPage />;
+  
+  if (loading) return (
+    <div className="h-screen bg-black flex items-center justify-center text-white">
+      <Loader2 className="animate-spin w-10 h-10 text-blue-500" />
     </div>
   );
-}
 
-// Simple Helper for Free TTS (Puter.js or Web Speech)
-async function fetchTTS(text: string) {
-  // Option A: Use Web Speech API + MediaRecorder (True Free)
-  // Option B: Use a free API proxy. For simplicity, we use a placeholder:
-  const response = await fetch(`https://api.voicerss.org/?key=YOUR_FREE_KEY&src=${text}&hl=en-us&f=44khz_16bit_stereo`);
-  return response.blob();
+  // User gesture required to unlock audio
+  if (!hasInteracted) {
+    return (
+      <div className="h-screen bg-black flex flex-col items-center justify-center text-white space-y-6 cursor-pointer" onClick={() => setHasInteracted(true)}>
+         <div className="w-24 h-24 bg-blue-600 rounded-full flex items-center justify-center animate-pulse">
+            <Play className="w-10 h-10 fill-white" />
+         </div>
+         <h1 className="text-2xl font-bold tracking-tighter">Click to Enter Brainrot</h1>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black flex items-center justify-center overflow-hidden font-sans">
+      <div className="relative w-full h-full md:w-[400px] md:h-[85vh] md:rounded-[3rem] bg-black overflow-hidden shadow-2xl border-0 md:border-[8px] border-[#222]">
+        
+        {/* Dynamic Island */}
+        <div className="hidden md:block absolute top-0 left-1/2 -translate-x-1/2 w-32 h-7 bg-black z-50 rounded-b-2xl" />
+
+        <div className="relative h-full w-full">
+          <motion.div 
+            className="h-full w-full"
+            animate={{ y: -currentIndex * 100 + "%" }}
+            transition={{ type: "spring", stiffness: 300, damping: 30 }}
+          >
+            {emails.map((email, index) => (
+              <ReelItem 
+                key={email.id} 
+                email={email} 
+                isActive={index === currentIndex}
+                // Preload logic: Load current AND next one. 
+                // As you scroll down (currentIndex increases), the next index becomes true.
+                shouldLoad={index <= currentIndex + 1}
+                onSwipeUp={handleNext}
+                onSwipeDown={handlePrev}
+              />
+            ))}
+          </motion.div>
+        </div>
+
+        {/* Indicator */}
+        <div className="absolute top-12 left-6 z-40">
+            <div className="bg-black/40 backdrop-blur-md px-3 py-1 rounded-full text-xs font-bold text-white border border-white/10">
+                Inbox • {currentIndex + 1}/{emails.length}
+            </div>
+        </div>
+
+      </div>
+    </div>
+  );
 }
